@@ -51,8 +51,15 @@ def fuse(ip: str, classification: Classification, estimates: list) -> LocateResu
     if crowd:
         best = max(crowd, key=lambda e: e.weight)
         fused_lat, fused_lon, radius = best.lat, best.lon, best.radius_km
-        label = "정밀(GPS 군집)"
-        messages.append("동의 기반 GPS 데이터로 정밀 측위")
+        # Reflect the actual data quality: a DBSCAN cluster is precise, but
+        # sparse/scattered points are only a rough hint. crowdsource encodes
+        # this in meta["cluster"].
+        if best.meta.get("cluster"):
+            label = "정밀(GPS 군집)"
+            messages.append("동의 기반 GPS 군집으로 정밀 측위")
+        else:
+            label = "GPS 희소(낮은 신뢰)"
+            messages.append("동의 GPS 데이터가 희소·분산 — 신뢰도 낮음")
     else:
         # Inverse-variance fuse every non-crowdsource estimate.
         others = [e for e in estimates if not e.signal.startswith("crowdsource")]

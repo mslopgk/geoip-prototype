@@ -119,7 +119,7 @@ def triangulate(constraints: Sequence[tuple]) -> Optional[tuple]:
 
     best = None
     best_m = None
-    for la in np.arange(-55.0, 72.0, 4.0):
+    for la in np.arange(-60.0, 78.0, 4.0):  # cover all inhabited/probe latitudes
         for lo in np.arange(-180.0, 180.0, 4.0):
             m, _sat = worst_margin(float(la), float(lo))
             if best_m is None or m < best_m:
@@ -141,6 +141,26 @@ def triangulate(constraints: Sequence[tuple]) -> Optional[tuple]:
     return (float(cla), float(clo), float(radius), int(sat))
 
 
+def weighted_lon_mean(lons, weights=None) -> float:
+    """Circular (antimeridian-safe) weighted mean of longitudes in degrees.
+
+    A plain arithmetic mean of longitudes is wrong across the ±180° dateline
+    (170° and -170° are 20° apart, not 340°). We average the unit vectors and
+    recover the angle with atan2.
+    """
+    lons = np.radians(np.asarray(lons, dtype=float))
+    if len(lons) == 0:
+        return 0.0
+    if weights is None:
+        weights = np.ones(len(lons))
+    weights = np.asarray(weights, dtype=float)
+    s = float(np.sum(weights * np.sin(lons)))
+    c = float(np.sum(weights * np.cos(lons)))
+    if s == 0.0 and c == 0.0:  # antipodal cancellation: no meaningful mean
+        return float(np.degrees(lons[0]))
+    return math.degrees(math.atan2(s, c))
+
+
 def inverse_variance_fuse(estimates: Sequence) -> Optional[tuple]:
     """Reliability-weighted, inverse-variance fusion of point estimates.
 
@@ -150,28 +170,30 @@ def inverse_variance_fuse(estimates: Sequence) -> Optional[tuple]:
     items = [e for e in estimates if e is not None]
     if not items:
         return None
-    sw = slat = slon = 0.0
-    for e in items:
-        r = max(0.5, float(e.radius_km))
-        w = float(e.weight) / (r * r)
-        sw += w
-        slat += w * e.lat
-        slon += w * e.lon
+    weights = np.array([float(e.weight) / (max(0.5, float(e.radius_km)) ** 2) for e in items])
+    sw = float(weights.sum())
     if sw <= 0:
         return None
-    lat = slat / sw
-    lon = slon / sw
-    radius = 1.0 / math.sqrt(sum(float(e.weight) / (max(0.5, float(e.radius_km)) ** 2) for e in items))
+    lats = np.array([float(e.lat) for e in items])
+    lons = np.array([float(e.lon) for e in items])
+    lat = float(np.sum(weights * lats) / sw)
+    lon = weighted_lon_mean(lons, weights)  # antimeridian-safe
+    radius = 1.0 / math.sqrt(sw)
     return (lat, lon, radius)
 
 
 def centroid(points: np.ndarray, weights: Optional[np.ndarray] = None) -> tuple:
-    """Weighted centroid of [lat, lon] points (small-area planar approximation)."""
+    """Weighted centroid of [lat, lon] points (antimeridian-safe in longitude)."""
     points = np.asarray(points, dtype=float)
+    if len(points) == 0:
+        return 0.0, 0.0
     if weights is None:
         weights = np.ones(len(points))
     weights = np.asarray(weights, dtype=float)
     wsum = weights.sum()
     if wsum <= 0:
-        return float(points[:, 0].mean()), float(points[:, 1].mean())
-    return float((points[:, 0] * weights).sum() / wsum), float((points[:, 1] * weights).sum() / wsum)
+        weights = np.ones(len(points))
+        wsum = float(weights.sum())
+    lat = float((points[:, 0] * weights).sum() / wsum)
+    lon = weighted_lon_mean(points[:, 1], weights)
+    return lat, lon

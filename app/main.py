@@ -39,13 +39,20 @@ def _is_routable(ip: str) -> bool:
         return False
 
 
+# Only honour X-Forwarded-For when explicitly told we sit behind a trusted
+# reverse proxy. Otherwise any client could spoof the header to claim — and via
+# /api/delete, erase — another IP's contributions.
+_TRUST_PROXY = os.environ.get("GEOIP_TRUST_PROXY", "").lower() in ("1", "true", "yes")
+
+
 def _header_ip(request: Request) -> str:
-    """Best-effort public IP of the caller from proxy headers / socket."""
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        cand = xff.split(",")[0].strip()
-        if _is_routable(cand):
-            return cand
+    """Best-effort public IP of the caller (socket IP; proxy header only if trusted)."""
+    if _TRUST_PROXY:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            cand = xff.split(",")[0].strip()
+            if _is_routable(cand):
+                return cand
     if request.client and _is_routable(request.client.host):
         return request.client.host
     return ""

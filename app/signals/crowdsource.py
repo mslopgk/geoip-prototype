@@ -48,21 +48,13 @@ def collect(ip) -> list[Estimate]:
         chosen = [pts[i] for i in chosen_idx]
 
         # Time-weighted centroid: exponential decay with ~30-day scale.
+        # Longitude uses an antimeridian-safe circular mean (geo.centroid).
         now = time.time()
-        sw = slat = slon = 0.0
-        for p in chosen:
-            age_days = (now - float(p["ts"])) / 86400.0
-            w = math.exp(-age_days / 30.0)
-            sw += w
-            slat += w * float(p["lat"])
-            slon += w * float(p["lon"])
-        if sw <= 0:
-            # Degenerate weights (shouldn't happen); fall back to plain mean.
-            lat = float(np.mean([float(p["lat"]) for p in chosen]))
-            lon = float(np.mean([float(p["lon"]) for p in chosen]))
-        else:
-            lat = slat / sw
-            lon = slon / sw
+        weights = np.array(
+            [math.exp(-((now - float(p["ts"])) / 86400.0) / 30.0) for p in chosen],
+            dtype=float,
+        )
+        lat, lon = geo.centroid(arr[chosen_idx], weights)
 
         # Spread: farthest chosen point from the centroid (km).
         spread = 0.0
