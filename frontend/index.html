@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>다중 신호 IP 위치 추정 · 연구용 프로토타입</title>
+
+  <!-- Leaflet (CDN) -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --brand: #2563eb;
+      --brand-ink: #1d4ed8;
+      --geoip: #2563eb;
+      --traceroute: #ea580c;
+      --latency: #7c3aed;
+      --crowd: #dc2626;
+      --good: #16a34a;
+      --warn: #d97706;
+      --danger: #dc2626;
+      --shadow: 0 1px 3px rgba(15, 23, 42, .08), 0 4px 16px rgba(15, 23, 42, .06);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Malgun Gothic", "Noto Sans KR", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---- Banner ---- */
+    .banner {
+      background: linear-gradient(90deg, #0f172a, #1e293b);
+      color: #e2e8f0;
+      text-align: center;
+      font-size: 13px;
+      letter-spacing: .2px;
+      padding: 9px 16px;
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      border-bottom: 1px solid rgba(255, 255, 255, .08);
+    }
+    .banner b { color: #fff; }
+
+    /* ---- Layout ---- */
+    .wrap {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    header.page-head { margin-bottom: 18px; }
+    header.page-head h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -.3px;
+    }
+    header.page-head p.sub {
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 760px;
+    }
+
+    /* ---- Controls ---- */
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 18px 0 20px;
+      padding: 16px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+    }
+    .controls input[type="text"] {
+      flex: 1 1 220px;
+      min-width: 180px;
+      font-size: 15px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .controls input[type="text"]:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, .15);
+    }
+    .btn {
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 16px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: filter .15s, background .15s, transform .05s;
+      white-space: nowrap;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn[disabled] { opacity: .55; cursor: not-allowed; }
+    .btn-primary { background: var(--brand); color: #fff; }
+    .btn-primary:hover:not([disabled]) { background: var(--brand-ink); }
+    .btn-ghost {
+      background: #f8fafc;
+      color: var(--ink);
+      border-color: var(--line);
+    }
+    .btn-ghost:hover:not([disabled]) { background: #eef2f7; }
+    a.btn-link {
+      margin-left: auto;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--brand-ink);
+      text-decoration: none;
+      padding: 10px 8px;
+    }
+    a.btn-link:hover { text-decoration: underline; }
+
+    /* ---- Main grid ---- */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 18px;
+      align-items: start;
+    }
+    @media (max-width: 920px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    #map {
+      height: 520px;
+      width: 100%;
+      background: #dfe6ee;
+    }
+    @media (max-width: 920px) {
+      #map { height: 380px; }
+    }
+
+    /* ---- Results panel ---- */
+    .panel { padding: 18px; }
+    .panel .placeholder {
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 36px 8px;
+    }
+
+    .result-ip {
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .result-ip b {
+      font-size: 18px;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .conf-row {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin: 12px 0 4px;
+      flex-wrap: wrap;
+    }
+    .conf-radius {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .conf-radius b { color: var(--ink); }
+
+    .badge {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 999px;
+      line-height: 1.4;
+    }
+    .badge-good { background: #dcfce7; color: #166534; }
+    .badge-warn { background: #fef3c7; color: #92400e; }
+    .badge-danger { background: #fee2e2; color: #991b1b; }
+    .badge-muted { background: #e2e8f0; color: #334155; }
+    .badge-info { background: #dbeafe; color: #1e40af; }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: var(--muted);
+      margin: 18px 0 8px;
+    }
+
+    .class-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: center;
+    }
+    .class-meta {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+    .class-meta div { margin: 2px 0; }
+    .class-meta .k { color: #94a3b8; }
+    .class-meta .v { color: var(--ink); }
+
+    /* early-return notice */
+    .notice {
+      margin: 14px 0;
+      padding: 12px 14px;
+      border-radius: 12px;
+      font-size: 13.5px;
+      border: 1px solid;
+    }
+    .notice-danger {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #991b1b;
+    }
+    .notice-danger b { display: block; margin-bottom: 3px; font-size: 14px; }
+
+    /* estimates */
+    ul.est-list { list-style: none; margin: 0; padding: 0; }
+    ul.est-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      padding: 9px 0;
+      border-top: 1px solid var(--line);
+      font-size: 13.5px;
+    }
+    ul.est-list li:first-child { border-top: none; }
+    .dot {
+      flex: 0 0 auto;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      margin-top: 5px;
+      box-shadow: 0 0 0 3px rgba(0, 0, 0, .04);
+    }
+    .est-body { flex: 1 1 auto; min-width: 0; }
+    .est-signal {
+      font-weight: 700;
+      font-size: 12.5px;
+      color: var(--ink);
+    }
+    .est-label {
+      color: var(--ink);
+      word-break: break-word;
+    }
+    .est-num {
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      margin-top: 1px;
+    }
+
+    /* messages */
+    .msg-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      color: #92400e;
+      border-radius: 10px;
+      padding: 9px 11px;
+      font-size: 13px;
+      margin-top: 8px;
+    }
+    .msg-row .ic { flex: 0 0 auto; }
+
+    /* states */
+    #status { margin-top: 10px; }
+    .loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 14px;
+      padding: 8px 0;
+    }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2.5px solid var(--line);
+      border-top-color: var(--brand);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error-box {
+      background: #fef2f2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      border-radius: 10px;
+      padding: 11px 13px;
+      font-size: 13.5px;
+    }
+
+    /* legend on map card */
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      padding: 10px 16px;
+      border-top: 1px solid var(--line);
+      font-size: 12.5px;
+      color: var(--muted);
+      background: #fbfdff;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+    footer.foot {
+      margin-top: 28px;
+      text-align: center;
+      color: #94a3b8;
+      font-size: 12px;
+    }
+
+    /* Leaflet fused divicon */
+    .fused-pin {
+      background: transparent;
+      border: none;
+    }
+    .fused-pin .pin-core {
+      width: 22px; height: 22px;
+      background: var(--good);
+      border: 3px solid #fff;
+      border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, .35);
+    }
+  </style>
+</head>
+<body>
+  <!-- Always-visible ethics banner -->
+  <div class="banner">
+    🔬 <b>연구용 프로토타입</b> · 은닉 수집 없음 · 동의 기반 데이터만 사용
+  </div>
+
+  <div class="wrap">
+    <header class="page-head">
+      <h1>다중 신호 IP 위치 추정 엔진</h1>
+      <p class="sub">
+        여러 신호(다중 GeoIP, ASN, traceroute, 레이턴시 삼각측량, 동의 기반 GPS)를
+        융합해 IP 주소의 위치를 추정합니다. 단일 데이터베이스가 아닌 신호 간 교차
+        검증으로 신뢰 반경을 함께 제공합니다.
+      </p>
+    </header>
+
+    <!-- Controls -->
+    <div class="controls">
+      <input
+        id="ip-input"
+        type="text"
+        placeholder="예: 8.8.8.8"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="조회할 IP 주소"
+      />
+      <button id="btn-locate" class="btn btn-primary">조회</button>
+      <button id="btn-myip" class="btn btn-ghost">내 IP 조회</button>
+      <a class="btn-link" href="/contribute">위치 기여하기 →</a>
+    </div>
+
+    <!-- Main grid: map + results -->
+    <div class="grid">
+      <div class="card">
+        <div id="map"></div>
+        <div class="legend">
+          <span><i class="dot" style="background:#2563eb;margin:0"></i> GeoIP</span>
+          <span><i class="dot" style="background:#ea580c;margin:0"></i> traceroute</span>
+          <span><i class="dot" style="background:#7c3aed;margin:0"></i> 레이턴시</span>
+          <span><i class="dot" style="background:#dc2626;margin:0"></i> 크라우드소스</span>
+          <span><i class="dot" style="background:#16a34a;margin:0"></i> 융합 결과</span>
+        </div>
+      </div>
+
+      <div class="card panel" id="panel">
+        <div class="placeholder">
+          IP를 입력하고 <b>조회</b>를 누르거나, <b>내 IP 조회</b>로 시작하세요.
+        </div>
+      </div>
+    </div>
+
+    <div id="status"></div>
+
+    <footer class="foot">
+      추정 결과는 신호 가용성에 따라 달라지며 정밀 위치를 보장하지 않습니다.
+    </footer>
+  </div>
+
+  <script>
+    "use strict";
+
+    // ----- Signal -> color mapping (by prefix before ':') -----
+    var SIGNAL_COLORS = {
+      geoip: "#2563eb",       // blue
+      traceroute: "#ea580c",  // orange
+      latency: "#7c3aed",     // purple
+      crowdsource: "#dc2626"  // red
+    };
+    var FUSED_COLOR = "#16a34a"; // green
+    var DEFAULT_COLOR = "#64748b";
+
+    function colorForSignal(signal) {
+      if (!signal) return DEFAULT_COLOR;
+      var prefix = String(signal).split(":")[0].trim().toLowerCase();
+      return SIGNAL_COLORS[prefix] || DEFAULT_COLOR;
+    }
+
+    // ----- Map setup -----
+    var map = L.map("map", { worldCopyJump: true }).setView([20, 0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    }).addTo(map);
+
+    // Single reusable layer group; reset on each query.
+    var layer = L.layerGroup().addTo(map);
+
+    // ----- Small DOM helpers -----
+    function el(tag, cls, text) {
+      var n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    }
+    function num(v, digits) {
+      if (v == null || isNaN(v)) return "—";
+      var d = digits == null ? 0 : digits;
+      return Number(v).toFixed(d);
+    }
+
+    // Confidence label -> badge color heuristic.
+    function confBadgeClass(label) {
+      var s = (label || "").toString();
+      if (s.indexOf("정밀") >= 0 || s.indexOf("GPS") >= 0) return "badge-good";
+      if (s.indexOf("도시") >= 0) return "badge-info";
+      if (s.indexOf("불가") >= 0 || s.indexOf("모바일") >= 0) return "badge-danger";
+      if (s.indexOf("광역") >= 0) return "badge-warn";
+      return "badge-muted";
+    }
+
+    // ----- Render the map from a result -----
+    function renderMap(data) {
+      layer.clearLayers();
+      var bounds = [];
+      var estimates = Array.isArray(data.estimates) ? data.estimates : [];
+
+      estimates.forEach(function (e) {
+        if (e == null || e.lat == null || e.lon == null) return;
+        var color = colorForSignal(e.signal);
+        var ll = [Number(e.lat), Number(e.lon)];
+        var radiusM = Math.max(0, Number(e.radius_km) || 0) * 1000;
+
+        L.circle(ll, {
+          radius: radiusM,
+          color: color,
+          weight: 1.5,
+          opacity: 0.7,
+          fillColor: color,
+          fillOpacity: 0.08
+        }).addTo(layer);
+
+        var marker = L.circleMarker(ll, {
+          radius: 6,
+          color: "#ffffff",
+          weight: 2,
+          fillColor: color,
+          fillOpacity: 1
+        }).addTo(layer);
+
+        var popup = "<b>" + escapeHtml(e.signal || "") + "</b><br>" +
+          escapeHtml(e.label || "") +
+          "<br><small>±" + num(e.radius_km, 0) + "km · w=" + num(e.weight, 2) + "</small>";
+        marker.bindPopup(popup);
+
+        bounds.push(ll);
+      });
+
+      // Fused result: prominent green pin + dashed confidence circle.
+      if (data.fused_lat != null && data.fused_lon != null) {
+        var fll = [Number(data.fused_lat), Number(data.fused_lon)];
+        var confM = Math.max(0, Number(data.confidence_radius_km) || 0) * 1000;
+
+        if (confM > 0) {
+          L.circle(fll, {
+            radius: confM,
+            color: FUSED_COLOR,
+            weight: 2,
+            opacity: 0.9,
+            dashArray: "8 6",
+            fillColor: FUSED_COLOR,
+            fillOpacity: 0.06
+          }).addTo(layer);
+        }
+
+        var icon = L.divIcon({
+          className: "fused-pin",
+          html: '<div class="pin-core"></div>',
+          iconSize: [22, 22],
+          iconAnchor: [11, 22],
+          popupAnchor: [0, -20]
+        });
+        L.marker(fll, { icon: icon, zIndexOffset: 1000 })
+          .bindPopup(
+            "<b>융합 결과</b><br>" +
+            escapeHtml(data.confidence_label || "") +
+            "<br><small>신뢰 반경 ±" + num(data.confidence_radius_km, 0) + "km</small>"
+          )
+          .addTo(layer);
+
+        bounds.push(fll);
+      }
+
+      // Fit bounds to everything drawn.
+      if (bounds.length === 1) {
+        map.setView(bounds[0], 9);
+      } else if (bounds.length > 1) {
+        map.fitBounds(L.latLngBounds(bounds).pad(0.25));
+      }
+    }
+
+    // ----- Render the results panel from a result -----
+    function renderPanel(data) {
+      var panel = document.getElementById("panel");
+      panel.innerHTML = "";
+
+      // queried IP
+      var ipRow = el("div", "result-ip");
+      ipRow.appendChild(document.createTextNode("조회 대상 IP "));
+      var ipB = el("b", null, data.ip || "—");
+      ipRow.appendChild(ipB);
+      panel.appendChild(ipRow);
+
+      // confidence
+      var confRow = el("div", "conf-row");
+      var badge = el("span", "badge " + confBadgeClass(data.confidence_label),
+        data.confidence_label || "신뢰도 미상");
+      confRow.appendChild(badge);
+      var cr = el("span", "conf-radius");
+      cr.innerHTML = "신뢰 반경 <b>±" + num(data.confidence_radius_km, 0) + "km</b>";
+      confRow.appendChild(cr);
+      panel.appendChild(confRow);
+
+      // early-return notice
+      if (data.early_return) {
+        var notice = el("div", "notice notice-danger");
+        notice.appendChild(el("b", null, "정밀 추적 불가"));
+        notice.appendChild(document.createTextNode(
+          "이 대상은 모바일/CGNAT 네트워크로 분류되어 단말 단위 위치 추적이 불가능합니다. " +
+          "표시된 추정은 통신사 광역 수준입니다."
+        ));
+        panel.appendChild(notice);
+      }
+
+      // classification
+      var c = data.classification || {};
+      panel.appendChild(el("div", "section-title", "네트워크 분류"));
+      var classLine = el("div", "class-line");
+      if (c.is_mobile) classLine.appendChild(el("span", "badge badge-warn", "모바일"));
+      if (c.is_hosting) classLine.appendChild(el("span", "badge badge-info", "호스팅/데이터센터"));
+      if (c.is_proxy) classLine.appendChild(el("span", "badge badge-danger", "프록시/VPN"));
+      if (!c.is_mobile && !c.is_hosting && !c.is_proxy) {
+        classLine.appendChild(el("span", "badge badge-muted", "일반 회선"));
+      }
+      panel.appendChild(classLine);
+
+      var meta = el("div", "class-meta");
+      meta.appendChild(metaLine("ASN", c.asn));
+      meta.appendChild(metaLine("조직", c.org));
+      meta.appendChild(metaLine("네트워크", c.network));
+      if (c.note) meta.appendChild(metaLine("비고", c.note));
+      panel.appendChild(meta);
+
+      // estimates
+      var estimates = Array.isArray(data.estimates) ? data.estimates : [];
+      panel.appendChild(el("div", "section-title", "개별 신호 추정 (" + estimates.length + ")"));
+      if (estimates.length === 0) {
+        panel.appendChild(el("div", "placeholder", "사용 가능한 신호 추정이 없습니다."));
+      } else {
+        var ul = el("ul", "est-list");
+        estimates.forEach(function (e) {
+          if (e == null) return;
+          var li = el("li");
+          var dot = el("i", "dot");
+          dot.style.background = colorForSignal(e.signal);
+          dot.style.marginTop = "5px";
+          li.appendChild(dot);
+
+          var body = el("div", "est-body");
+          body.appendChild(el("div", "est-signal", e.signal || "(unknown)"));
+          body.appendChild(el("div", "est-label", e.label || ""));
+          body.appendChild(el("div", "est-num",
+            "±" + num(e.radius_km, 0) + "km · w=" + num(e.weight, 2)));
+          li.appendChild(body);
+          ul.appendChild(li);
+        });
+        panel.appendChild(ul);
+      }
+
+      // messages as warning rows
+      var messages = Array.isArray(data.messages) ? data.messages : [];
+      if (messages.length > 0) {
+        panel.appendChild(el("div", "section-title", "메시지"));
+        messages.forEach(function (m) {
+          if (m == null || m === "") return;
+          var row = el("div", "msg-row");
+          row.appendChild(el("span", "ic", "⚠️"));
+          row.appendChild(el("span", null, String(m)));
+          panel.appendChild(row);
+        });
+      }
+    }
+
+    function metaLine(k, v) {
+      var d = el("div");
+      d.appendChild(el("span", "k", k + ": "));
+      d.appendChild(el("span", "v", (v == null || v === "") ? "—" : String(v)));
+      return d;
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    // ----- Status (loading / error) -----
+    function setLoading(on) {
+      var s = document.getElementById("status");
+      if (on) {
+        s.innerHTML = "";
+        var box = el("div", "loading");
+        box.appendChild(el("div", "spinner"));
+        box.appendChild(el("span", null, "신호를 수집하고 융합하는 중입니다… (수초 소요될 수 있습니다)"));
+        s.appendChild(box);
+      } else {
+        s.innerHTML = "";
+      }
+    }
+    function setError(msg) {
+      var s = document.getElementById("status");
+      s.innerHTML = "";
+      var box = el("div", "error-box", "오류: " + msg);
+      s.appendChild(box);
+    }
+
+    // ----- Fetch + drive -----
+    var busy = false;
+    function setBusy(on) {
+      busy = on;
+      document.getElementById("btn-locate").disabled = on;
+      document.getElementById("btn-myip").disabled = on;
+    }
+
+    function locate(ip) {
+      if (busy) return;
+      setBusy(true);
+      setLoading(true);
+
+      var url = "/api/locate";
+      if (ip && ip.trim() !== "") {
+        url += "?ip=" + encodeURIComponent(ip.trim());
+      }
+
+      fetch(url, { headers: { "Accept": "application/json" } })
+        .then(function (resp) {
+          if (!resp.ok) {
+            return resp.text().then(function (t) {
+              var detail = t;
+              try { detail = JSON.parse(t).detail || t; } catch (e) {}
+              throw new Error("HTTP " + resp.status + (detail ? " · " + detail : ""));
+            });
+          }
+          return resp.json();
+        })
+        .then(function (data) {
+          setLoading(false);
+          renderMap(data);
+          renderPanel(data);
+        })
+        .catch(function (err) {
+          setLoading(false);
+          setError(err && err.message ? err.message : "요청에 실패했습니다.");
+        })
+        .then(function () {
+          setBusy(false);
+        });
+    }
+
+    // ----- Wire up controls -----
+    document.getElementById("btn-locate").addEventListener("click", function () {
+      var ip = document.getElementById("ip-input").value;
+      if (!ip || ip.trim() === "") {
+        setError("IP 주소를 입력하세요. (또는 ‘내 IP 조회’를 사용하세요)");
+        return;
+      }
+      locate(ip);
+    });
+
+    document.getElementById("btn-myip").addEventListener("click", function () {
+      locate(null); // omit ip param -> server uses caller IP
+    });
+
+    document.getElementById("ip-input").addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") {
+        document.getElementById("btn-locate").click();
+      }
+    });
+  </script>
+</body>
+</html>

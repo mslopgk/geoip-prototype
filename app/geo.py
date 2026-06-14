@@ -96,41 +96,48 @@ def triangulate(constraints: Sequence[tuple]) -> Optional[tuple]:
     if not cons:
         return None
 
-    def score(la: float, lo: float):
-        viol = 0.0
+    def worst_margin(la: float, lo: float):
+        """(max_i(dist_i - R_i), satisfied_count).
+
+        Each disk is dist <= R. The worst margin is the largest signed overshoot
+        across probes; minimizing it yields the Chebyshev centre of the disk
+        intersection (the point deepest inside all disks). This pulls the estimate
+        toward the smallest disk - i.e. the nearest probe, which for a unicast
+        target sits closest to the truth - instead of an arbitrary corner of the
+        feasible region.
+        """
+        worst = -1.0e18
         sat = 0
-        for (plat, plon, R, w) in cons:
+        for (plat, plon, R, _w) in cons:
             dd = haversine_km(la, lo, plat, plon)
             if dd <= R:
                 sat += 1
-            else:
-                viol += (dd - R) * max(w, 0.01)
-        return viol, sat
+            margin = dd - R
+            if margin > worst:
+                worst = margin
+        return worst, sat
 
     best = None
-    best_key = None
+    best_m = None
     for la in np.arange(-55.0, 72.0, 4.0):
         for lo in np.arange(-180.0, 180.0, 4.0):
-            viol, sat = score(float(la), float(lo))
-            key = (round(viol, 2), -sat)
-            if best_key is None or key < best_key:
-                best_key = key
+            m, _sat = worst_margin(float(la), float(lo))
+            if best_m is None or m < best_m:
+                best_m = m
                 best = (float(la), float(lo))
 
     cla, clo = best
     for step in (2.0, 1.0, 0.4, 0.15):
-        improved = True
         span = step * 5
         for la in np.arange(cla - span, cla + span + 1e-9, step):
             for lo in np.arange(clo - span, clo + span + 1e-9, step):
-                viol, sat = score(float(la), float(lo))
-                key = (round(viol, 2), -sat)
-                if key < best_key:
-                    best_key = key
+                m, _sat = worst_margin(float(la), float(lo))
+                if m < best_m:
+                    best_m = m
                     cla, clo = float(la), float(lo)
 
     radius = min(c[2] for c in cons)
-    _, sat = score(cla, clo)
+    _, sat = worst_margin(cla, clo)
     return (float(cla), float(clo), float(radius), int(sat))
 
 

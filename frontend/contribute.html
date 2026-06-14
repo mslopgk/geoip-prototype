@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>위치 기여 · 다중신호 IP 측위 프로토타입</title>
+
+<!-- Leaflet (OSM) via CDN unpkg -->
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+  crossorigin=""
+/>
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+  crossorigin=""
+></script>
+
+<style>
+  /* ---- 공통 토큰 (index.html과 동일 룩 유지) ---- */
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --panel-2: #1f232c;
+    --border: #2a2f3a;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --accent: #4ea1ff;
+    --accent-2: #38d39f;
+    --warn: #ffcc66;
+    --danger: #ff6b6b;
+    --radius: 12px;
+    --shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- 연구용 프로토타입 배너 (index.html과 동일) ---- */
+  .banner {
+    background: linear-gradient(90deg, #2a1f3d, #1f2b3d);
+    border-bottom: 1px solid var(--border);
+    color: var(--warn);
+    font-size: 0.9rem;
+    text-align: center;
+    padding: 10px 16px;
+    letter-spacing: 0.2px;
+  }
+
+  .wrap {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 24px 16px 64px;
+  }
+
+  header.page {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin: 20px 0 8px;
+  }
+
+  header.page h1 {
+    font-size: 1.5rem;
+    margin: 0;
+    font-weight: 700;
+  }
+
+  .back-link {
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 0.95rem;
+    white-space: nowrap;
+  }
+  .back-link:hover { text-decoration: underline; }
+
+  .lede {
+    color: var(--muted);
+    margin: 0 0 20px;
+    font-size: 0.98rem;
+  }
+
+  /* ---- 카드 룩 ---- */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 20px 22px;
+    margin-bottom: 18px;
+  }
+
+  .card h2 {
+    margin: 0 0 14px;
+    font-size: 1.12rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ---- 고지 항목 목록 ---- */
+  dl.disclosure {
+    margin: 0;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 10px 18px;
+  }
+  dl.disclosure dt {
+    color: var(--accent-2);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  dl.disclosure dd {
+    margin: 0;
+    color: var(--text);
+  }
+  dl.disclosure dd .muted { color: var(--muted); }
+
+  .legal-note {
+    margin-top: 16px;
+    padding: 12px 14px;
+    border: 1px dashed var(--warn);
+    border-radius: 10px;
+    background: rgba(255, 204, 102, 0.06);
+    color: var(--warn);
+    font-size: 0.9rem;
+  }
+
+  /* ---- 동의 체크박스 ---- */
+  .consent {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .consent input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    margin-top: 2px;
+    accent-color: var(--accent-2);
+    flex: 0 0 auto;
+    cursor: pointer;
+  }
+  .consent span { font-weight: 600; }
+
+  /* ---- 버튼 ---- */
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 18px;
+  }
+
+  button {
+    font: inherit;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 11px 20px;
+    cursor: pointer;
+    transition: filter 0.12s ease, opacity 0.12s ease;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.12); }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  .btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #06121f;
+  }
+  .btn-danger {
+    background: transparent;
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+
+  /* ---- 상태 메시지 ---- */
+  .status {
+    margin-top: 16px;
+    padding: 13px 15px;
+    border-radius: 10px;
+    font-size: 0.95rem;
+    display: none;
+    white-space: pre-line;
+  }
+  .status.show { display: block; }
+  .status.ok {
+    background: rgba(56, 211, 159, 0.1);
+    border: 1px solid var(--accent-2);
+    color: var(--accent-2);
+  }
+  .status.err {
+    background: rgba(255, 107, 107, 0.1);
+    border: 1px solid var(--danger);
+    color: var(--danger);
+  }
+  .status.info {
+    background: rgba(78, 161, 255, 0.1);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+  }
+
+  /* ---- 지도 ---- */
+  #map {
+    height: 320px;
+    width: 100%;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    margin-top: 16px;
+    display: none;
+  }
+  #map.show { display: block; }
+
+  .leaflet-popup-content { color: #111; }
+
+  footer.page {
+    color: var(--muted);
+    font-size: 0.82rem;
+    text-align: center;
+    margin-top: 28px;
+  }
+</style>
+</head>
+<body>
+  <!-- 상시 노출 연구 배너 -->
+  <div class="banner">🔬 연구용 프로토타입 · 은닉 수집 없음 · 동의 기반 데이터만 사용</div>
+
+  <div class="wrap">
+    <header class="page">
+      <h1>📍 내 위치 기여하기</h1>
+      <a class="back-link" href="/">← 측위 조회로</a>
+    </header>
+    <p class="lede">
+      브라우저 GPS 좌표를 내 공인 IP와 매핑해 GeoIP 정확도 개선 연구에 기여합니다.
+      아래 고지 내용을 읽고 <b>명시적으로 동의</b>한 경우에만 수집됩니다.
+    </p>
+
+    <!-- 1) 동의/고지 카드 -->
+    <section class="card">
+      <h2>🛡️ 수집 고지 및 동의</h2>
+      <dl class="disclosure">
+        <dt>수집 항목</dt>
+        <dd>
+          공인 IP 주소, 브라우저 GPS 좌표(위도/경도/정확도),
+          시간대(timezone), 언어(language)
+        </dd>
+
+        <dt>수집 목적</dt>
+        <dd>GeoIP 위치 정확도 개선 연구 (IP ↔ 실측 위치 매핑)</dd>
+
+        <dt>보관 방식</dt>
+        <dd>로컬 SQLite 저장 · 연구 목적에 한함</dd>
+
+        <dt>이용자 권리</dt>
+        <dd>언제든 본인 데이터 삭제 가능 (아래 “내 데이터 삭제” 버튼)</dd>
+      </dl>
+
+      <div class="legal-note">
+        ⚠️ 고지: 본 프로토타입은 연구용입니다. 실제 서비스로 배포할 경우
+        「위치정보의 보호 및 이용 등에 관한 법률」에 따라 방송통신위원회(KCC)
+        신고·허가 및 별도 동의 절차가 필요합니다.
+      </div>
+
+      <!-- 필수 동의 체크박스 -->
+      <label class="consent" style="margin-top:16px;">
+        <input type="checkbox" id="consent" />
+        <span>위 내용을 이해했으며 내 위치 데이터 기여에 동의합니다.</span>
+      </label>
+
+      <div class="actions">
+        <button id="contributeBtn" class="btn-primary" disabled>
+          위치 기여하기
+        </button>
+        <button id="deleteBtn" class="btn-danger" type="button">
+          내 데이터 삭제
+        </button>
+      </div>
+
+      <!-- 상태 메시지 / 지도 -->
+      <div id="status" class="status"></div>
+      <div id="map"></div>
+    </section>
+
+    <footer class="page">
+      다중신호 융합 IP 측위 엔진 · 연구 프로토타입 · 로컬 SQLite 보관 · 은닉 수집 없음
+    </footer>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  const consentEl = document.getElementById("consent");
+  const contributeBtn = document.getElementById("contributeBtn");
+  const deleteBtn = document.getElementById("deleteBtn");
+  const statusEl = document.getElementById("status");
+  const mapEl = document.getElementById("map");
+
+  let map = null;
+  let marker = null;
+  let accuracyCircle = null;
+
+  /** 상태 메시지 표시 ("ok" | "err" | "info"). */
+  function showStatus(kind, text) {
+    statusEl.className = "status show " + kind;
+    statusEl.textContent = text;
+  }
+
+  /** 동의 체크 상태에 따라 기여 버튼 활성/비활성. */
+  function syncConsent() {
+    contributeBtn.disabled = !consentEl.checked;
+  }
+  consentEl.addEventListener("change", syncConsent);
+  syncConsent();
+
+  /** Leaflet 지도를 (lat, lon)에 표시하고 정확도 원을 그린다. */
+  function plotPoint(lat, lon, accuracyM) {
+    mapEl.classList.add("show");
+    if (!map) {
+      map = L.map(mapEl);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "© OpenStreetMap contributors",
+      }).addTo(map);
+    }
+    // 지도 컨테이너가 display:none → block 으로 바뀌었으므로 크기 재계산.
+    map.invalidateSize();
+    map.setView([lat, lon], 14);
+
+    if (marker) { map.removeLayer(marker); }
+    if (accuracyCircle) { map.removeLayer(accuracyCircle); }
+
+    marker = L.marker([lat, lon]).addTo(map);
+    marker
+      .bindPopup(
+        "기여한 위치<br>위도 " + lat.toFixed(6) + ", 경도 " + lon.toFixed(6)
+      )
+      .openPopup();
+
+    if (typeof accuracyM === "number" && isFinite(accuracyM) && accuracyM > 0) {
+      accuracyCircle = L.circle([lat, lon], {
+        radius: accuracyM,
+        color: "#38d39f",
+        weight: 1,
+        fillColor: "#38d39f",
+        fillOpacity: 0.12,
+      }).addTo(map);
+    }
+  }
+
+  /** 서버로 기여 데이터 POST. */
+  async function sendContribution(coords) {
+    const payload = {
+      lat: coords.latitude,
+      lon: coords.longitude,
+      accuracy: coords.accuracy,
+      tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      lang: navigator.language,
+      consent: true,
+    };
+
+    let resp;
+    try {
+      resp = await fetch("/api/contribute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    } catch (netErr) {
+      showStatus("err", "네트워크 오류로 전송에 실패했습니다: " + netErr.message);
+      return;
+    }
+
+    if (!resp.ok) {
+      let detail = "";
+      try {
+        const j = await resp.json();
+        detail = j.detail || j.message || JSON.stringify(j);
+      } catch (e) {
+        detail = "HTTP " + resp.status;
+      }
+      showStatus("err", "서버가 기여를 거부했습니다: " + detail);
+      return;
+    }
+
+    // 성공: 저장된 좌표/정확도 안내 + 지도 표시.
+    const lat = coords.latitude;
+    const lon = coords.longitude;
+    const acc = Math.round(coords.accuracy);
+    showStatus(
+      "ok",
+      "✅ 기여 감사합니다! 위치가 저장되었습니다.\n" +
+        "위도: " + lat.toFixed(6) + "\n" +
+        "경도: " + lon.toFixed(6) + "\n" +
+        "정확도: 약 ±" + acc + " m"
+    );
+    plotPoint(lat, lon, coords.accuracy);
+  }
+
+  /** Geolocation 오류를 한국어 메시지로 변환. */
+  function geoErrorMessage(err) {
+    switch (err.code) {
+      case err.PERMISSION_DENIED:
+        return "위치 권한이 거부되었습니다. 브라우저 주소창의 위치 권한을 허용한 뒤 다시 시도해 주세요.";
+      case err.POSITION_UNAVAILABLE:
+        return "현재 위치 정보를 확인할 수 없습니다. (GPS/네트워크 위치 사용 불가)";
+      case err.TIMEOUT:
+        return "위치 확인 시간이 초과되었습니다. 다시 시도해 주세요.";
+      default:
+        return "위치 확인 중 알 수 없는 오류가 발생했습니다: " + err.message;
+    }
+  }
+
+  // 기여 버튼: 브라우저 위치 요청 → 성공 시 전송.
+  contributeBtn.addEventListener("click", function () {
+    if (!consentEl.checked) {
+      showStatus("err", "먼저 수집 동의에 체크해 주세요.");
+      return;
+    }
+    if (!("geolocation" in navigator)) {
+      showStatus("err", "이 브라우저는 위치(Geolocation) 기능을 지원하지 않습니다.");
+      return;
+    }
+
+    showStatus("info", "📡 브라우저에 위치 권한을 요청 중입니다…");
+    navigator.geolocation.getCurrentPosition(
+      function (pos) {
+        sendContribution(pos.coords);
+      },
+      function (err) {
+        showStatus("err", geoErrorMessage(err));
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+
+  // 삭제 버튼: 본인 IP의 기여 데이터 삭제(빈 바디 POST).
+  deleteBtn.addEventListener("click", async function () {
+    showStatus("info", "🗑️ 삭제 요청 중입니다…");
+
+    let resp;
+    try {
+      resp = await fetch("/api/delete", { method: "POST" });
+    } catch (netErr) {
+      showStatus("err", "네트워크 오류로 삭제에 실패했습니다: " + netErr.message);
+      return;
+    }
+
+    if (!resp.ok) {
+      showStatus("err", "삭제 요청이 실패했습니다 (HTTP " + resp.status + ").");
+      return;
+    }
+
+    let count = 0;
+    try {
+      const j = await resp.json();
+      // 서버 응답 키가 무엇이든 합리적으로 개수를 추출.
+      count = j.deleted != null ? j.deleted
+            : j.count != null ? j.count
+            : j.removed != null ? j.removed
+            : 0;
+    } catch (e) {
+      count = 0;
+    }
+
+    // 지도/마커 정리.
+    if (map) {
+      if (marker) { map.removeLayer(marker); marker = null; }
+      if (accuracyCircle) { map.removeLayer(accuracyCircle); accuracyCircle = null; }
+    }
+    mapEl.classList.remove("show");
+
+    showStatus("ok", "✅ 내 IP의 기여 데이터 " + count + "건이 삭제되었습니다.");
+  });
+})();
+</script>
+</body>
+</html>
