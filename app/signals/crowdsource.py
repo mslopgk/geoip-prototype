@@ -20,6 +20,20 @@ import numpy as np
 from app import store, geo
 from app.models import Estimate
 
+# A household's OWN contributions (exact IP) count more than /24-prefix
+# neighbours — but only as a weight multiplier, so a much fresher neighbour
+# cluster can still win via time-decay (a stale exact fix must not pin us).
+EXACT_IP_BOOST = 3.0
+
+# A single, uncorroborated GPS fix (no cluster) has not earned street-level
+# precision; floor its radius so the reported circle matches its low trust.
+SPARSE_FLOOR_KM = 2.0
+
+# Privacy floor for /24-prefix-only matches: a caller who has no contribution of
+# their OWN must not receive a neighbour household's street-level location, only
+# a coarse neighbourhood-level hint.
+PREFIX_PRIVACY_FLOOR_KM = 2.0
+
 
 def collect(ip) -> list[Estimate]:
     """Return at most one crowdsource ``Estimate`` for ``ip`` (or ``[]``)."""
@@ -28,32 +42,45 @@ def collect(ip) -> list[Estimate]:
         if not pts:
             return []
 
+        n = len(pts)
         # (N, 2) array of [lat, lon] for clustering.
         arr = np.array([[float(p["lat"]), float(p["lon"])] for p in pts], dtype=float)
+
+        # Per-point weight = recency (30-day exp decay) x exact-IP boost. The
+        # household's own contributions count more, but a much fresher neighbour
+        # cluster still wins (time-decay preserved — no hard exact-only filter,
+        # which would let a stale exact fix shadow fresh same-household data).
+        now = time.time()
+        pt_w = np.array(
+            [
+                math.exp(-((now - float(p["ts"])) / 86400.0) / 30.0)
+                * (EXACT_IP_BOOST if str(p.get("ip")) == str(ip) else 1.0)
+                for p in pts
+            ],
+            dtype=float,
+        )
 
         # Tight clusters (1 km eps, >=2 points) represent a stable location.
         labels = geo.dbscan_haversine(arr, eps_km=1.0, min_samples=2)
 
-        # Pick the largest cluster if one exists, else fall back to all points.
-        non_noise = [int(l) for l in labels if l >= 0]
+        # Choose the cluster with the greatest TOTAL weight (recency + exact-IP),
+        # not the most raw points — so a noisier neighbour can't outvote us and a
+        # stale fix can't outweigh fresh data. Fall back to all points if none.
+        non_noise = sorted({int(l) for l in labels if l >= 0})
         cluster = len(non_noise) > 0
         if cluster:
-            # Mode of the non-negative labels = the most populated cluster id.
-            best_label = max(set(non_noise), key=non_noise.count)
-            chosen_idx = [i for i, l in enumerate(labels) if int(l) == best_label]
+            best_label = max(
+                non_noise,
+                key=lambda L: float(pt_w[[i for i in range(n) if int(labels[i]) == L]].sum()),
+            )
+            chosen_idx = [i for i in range(n) if int(labels[i]) == best_label]
         else:
-            # All noise: sparse/scattered data, use everything but be cautious.
-            chosen_idx = list(range(len(pts)))
+            chosen_idx = list(range(n))
 
         chosen = [pts[i] for i in chosen_idx]
 
-        # Time-weighted centroid: exponential decay with ~30-day scale.
-        # Longitude uses an antimeridian-safe circular mean (geo.centroid).
-        now = time.time()
-        weights = np.array(
-            [math.exp(-((now - float(p["ts"])) / 86400.0) / 30.0) for p in chosen],
-            dtype=float,
-        )
+        # Time/boost-weighted centroid (antimeridian-safe in longitude).
+        weights = pt_w[chosen_idx]
         lat, lon = geo.centroid(arr[chosen_idx], weights)
 
         # Spread: farthest chosen point from the centroid (km).
@@ -71,12 +98,15 @@ def collect(ip) -> list[Estimate]:
         ]
         min_accuracy_km = min(acc_km) if acc_km else None
 
-        # These are precise GPS points: keep the radius small. Bound the spread
-        # by the best device accuracy when we have it.
-        base = spread if spread > 0 else 0.1
+        # Honest uncertainty: at least the cluster spread, never tighter than the
+        # best device-reported GPS accuracy (accuracy only ADDS uncertainty), and
+        # -- for a sparse/uncorroborated fix -- never claiming street-level
+        # precision it has not earned.
+        radius_km = max(0.05, spread)
         if min_accuracy_km is not None:
-            base = min(base, min_accuracy_km) if base > 0 else min_accuracy_km
-        radius_km = max(0.05, base)
+            radius_km = max(radius_km, min_accuracy_km)
+        if not cluster:
+            radius_km = max(radius_km, SPARSE_FLOOR_KM)
 
         # Real cluster -> high confidence; sparse noise -> low confidence.
         weight = 0.95 if cluster else 0.5
@@ -84,10 +114,15 @@ def collect(ip) -> list[Estimate]:
         # Exact contributor match (vs only a /24 prefix neighbour) among chosen.
         exact = any(str(p.get("ip")) == str(ip) for p in chosen)
 
+        # Privacy: if the caller has no contribution of their own and is only a
+        # /24-prefix neighbour, never expose the household's street-level radius.
+        if not exact:
+            radius_km = max(radius_km, PREFIX_PRIVACY_FLOOR_KM)
+
         label = (
             "동의 기반 GPS "
             + ("정밀 군집" if cluster else "희소 데이터")
-            + f"(점 {len(chosen)}개/총 {len(pts)})"
+            + f"(점 {len(chosen)}개/총 {n}개)"
         )
 
         est = Estimate(
@@ -98,7 +133,7 @@ def collect(ip) -> list[Estimate]:
             weight=weight,
             label=label,
             meta={
-                "total_points": len(pts),
+                "total_points": n,
                 "used": len(chosen),
                 "cluster": bool(cluster),
                 "exact_ip": exact,

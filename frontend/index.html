@@ -205,6 +205,13 @@
     }
     .conf-radius b { color: var(--ink); }
 
+    .result-addr {
+      font-size: 15px;
+      margin: 2px 0 4px;
+      color: var(--ink);
+    }
+    .result-addr b { color: var(--brand-ink); }
+
     .badge {
       display: inline-block;
       font-size: 12px;
@@ -583,6 +590,14 @@
       confRow.appendChild(cr);
       panel.appendChild(confRow);
 
+      // Human-readable reverse-geocoded place (best-effort).
+      if (data.address) {
+        var addr = el("div", "result-addr");
+        addr.appendChild(document.createTextNode("📍 "));
+        addr.appendChild(el("b", null, String(data.address)));
+        panel.appendChild(addr);
+      }
+
       // early-return notice
       if (data.early_return) {
         var notice = el("div", "notice notice-danger");
@@ -711,7 +726,9 @@
           if (!resp.ok) {
             return resp.text().then(function (t) {
               var detail = t;
-              try { detail = JSON.parse(t).detail || t; } catch (e) {}
+              // This app returns errors as {"error": "..."} (not FastAPI's
+              // default {"detail": ...}); prefer that key for a clean message.
+              try { var j = JSON.parse(t); detail = j.error || j.detail || j.message || t; } catch (e) {}
               throw new Error("HTTP " + resp.status + (detail ? " · " + detail : ""));
             });
           }

@@ -59,6 +59,24 @@ _IATA_TOKEN_RE = re.compile(r"^[A-Za-z]{3}$")
 # "fra5" - extremely common in real backbone router hostnames.
 _IATA_PREFIX_RE = re.compile(r"^([A-Za-z]{3})\d{1,3}$")
 
+# Router-interface / role abbreviations that collide with real IATA codes and
+# would otherwise be mis-located: "gig0" (GigabitEthernet) -> GIG (Rio),
+# "tun3" (tunnel) -> TUN (Tunis), "pos1" (Packet-over-SONET) -> POS, etc.
+# These are never geographic hints.
+_INTERFACE_TOKENS = {
+    "gig", "ten", "son", "agg", "lag", "pos", "tun", "irb", "bvi", "eth",
+    "fab", "sup", "rsp", "mgt", "oob", "vme", "lan", "wan", "bdl", "lacp",
+}
+
+# Two-letter router interface/bundle prefixes (Juniper/Cisco) that collide with
+# ISO country codes and would otherwise be mistaken for a country label in the
+# hostname (e.g. "ae-1" = aggregated-ethernet, not UAE; "ge-0" = gigabit-ethernet,
+# not Georgia; "be-2" = bundle-ethernet, not Belgium).
+_INTERFACE_2L = {
+    "ae", "be", "et", "ge", "hu", "se", "so", "xe", "te", "gi", "fe",
+    "fa", "lo", "po", "tu", "vl", "em", "me", "pp", "br",
+}
+
 
 def _load_iata() -> dict:
     """Load iata.csv into ``{CODE: (lat, lon, city, country)}``.
@@ -140,6 +158,22 @@ def _hints_from_hostname(host: str, iata: dict):
     if not host:
         return
     tokens = re.split(r"[.\-]", host)
+
+    # Countries explicitly named in the hostname (2-letter ISO tokens matching a
+    # country present in the IATA table). When a host names a country, an IATA
+    # candidate from a *different* country is almost always an interface/role
+    # token coincidence (e.g. "sea01" inside a ".kr" host), not a real location.
+    known_countries = {c for (_la, _lo, _ci, c) in iata.values() if c}
+    host_countries = {
+        tok.upper() for tok in tokens
+        if len(tok) == 2 and tok.isalpha()
+        and tok.lower() not in _INTERFACE_2L
+        and tok.upper() in known_countries
+    }
+
+    def _country_ok(country: str) -> bool:
+        return not (host_countries and country and country.upper() not in host_countries)
+
     seen: set[str] = set()
     for tok in tokens:
         if not tok:
@@ -152,18 +186,25 @@ def _hints_from_hostname(host: str, iata: dict):
             m = _IATA_PREFIX_RE.match(tok)
             if m:
                 code = m.group(1).upper()
-        if code and code in iata and code not in seen:
-            seen.add(code)
-            lat, lon, city, _country = iata[code]
-            yield (code, lat, lon, city)
+        if (
+            code
+            and code.lower() not in _INTERFACE_TOKENS
+            and code in iata
+            and code not in seen
+        ):
+            lat, lon, city, country = iata[code]
+            if _country_ok(country):
+                seen.add(code)
+                yield (code, lat, lon, city)
         # Bare city-name token (e.g. "seoul", "hongkong")
         low = tok.lower()
         if low in _CITY_TOKENS:
             code = _CITY_TOKENS[low]
             if code in iata and code not in seen:
-                seen.add(code)
-                lat, lon, city, _country = iata[code]
-                yield (code, lat, lon, city)
+                lat, lon, city, country = iata[code]
+                if _country_ok(country):
+                    seen.add(code)
+                    yield (code, lat, lon, city)
 
 
 async def collect(ip, client) -> list[Estimate]:

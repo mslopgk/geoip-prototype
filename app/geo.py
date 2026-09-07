@@ -15,6 +15,12 @@ EARTH_R_KM = 6371.0088
 _C_KM_PER_S = 299_792.458
 FIBER_KM_PER_MS = _C_KM_PER_S * 0.66 / 1000.0  # ~197.9 km/ms one-way
 
+# De-correlation merge floor (km). Estimates closer than this are presumed to be
+# the same correlated source (e.g. two public GeoIP providers parroting one
+# upstream database) regardless of their stated radii. Tuned to GeoIP
+# city-centroid granularity. See _decorrelate / inverse_variance_fuse.
+EPS_FLOOR_KM = 50.0
+
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in kilometres."""
@@ -161,24 +167,119 @@ def weighted_lon_mean(lons, weights=None) -> float:
     return math.degrees(math.atan2(s, c))
 
 
+def _r_eff(e) -> float:
+    """Effective 1-sigma radius of an estimate, clamped away from zero."""
+    return max(0.5, float(e.radius_km))
+
+
+def _decorrelate(items: list) -> list:
+    """Collapse correlated (spatially overlapping) estimates to one rep each.
+
+    Inverse-variance fusion is only valid for *independent* measurements. Two
+    public GeoIP providers frequently share the same upstream database, so their
+    near-identical answers are correlated — counting both as independent
+    corroboration manufactures false confidence (and can shrink the fused radius
+    below a single source). We guard against this geometrically:
+
+    Single-linkage clustering — estimates i and j join when their great-circle
+    separation is ``<= max(EPS_FLOOR_KM, r_eff_i + r_eff_j)`` (their uncertainty
+    disks overlap, or they fall within the city-granularity floor). Each
+    resulting cluster collapses to its single most reliable member (smallest
+    variance ``r_eff**2 / weight``; ties broken by smaller radius, then signal
+    name for determinism). Survivors are treated as the independent evidence.
+    """
+    n = len(items)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = haversine_km(items[i].lat, items[i].lon, items[j].lat, items[j].lon)
+            if d <= max(EPS_FLOOR_KM, _r_eff(items[i]) + _r_eff(items[j])):
+                union(i, j)
+
+    clusters: dict = {}
+    for i in range(n):
+        clusters.setdefault(find(i), []).append(items[i])
+
+    def variance_key(e):
+        return (_r_eff(e) ** 2 / max(1e-9, float(e.weight)), float(e.radius_km), str(e.signal))
+
+    return [min(group, key=variance_key) for group in clusters.values()]
+
+
 def inverse_variance_fuse(estimates: Sequence) -> Optional[tuple]:
-    """Reliability-weighted, inverse-variance fusion of point estimates.
+    """Reliability-weighted fusion of point estimates into one circle.
 
     Each estimate must expose .lat, .lon, .radius_km, .weight.
-    Returns (lat, lon, radius_km) or None.
+    Returns ``(lat, lon, radius_km)`` or ``None``.
+
+    The radius is statistically honest about both *precision* and *agreement*:
+
+      1. De-correlate: collapse spatially overlapping (correlated) sources to one
+         representative each, so shared-database agreement cannot fake precision.
+      2. Center: inverse-variance weighted mean of the survivors (antimeridian-
+         safe in longitude).
+      3. precision = max(1/sqrt(sum w_i), min surviving r_eff) — the inverse-
+         variance 1-sigma, floored at the best single source's own granularity
+         (you can never be more certain than your most reliable measurement).
+      4. dispersion = weighted RMS great-circle scatter of survivors about the
+         center — grows when sources disagree.
+      5. max_reach = distance to the farthest ORIGINAL source (not just the
+         surviving reps) — a coverage floor so the circle always contains every
+         source it was built from, including ones collapsed into a cluster (a
+         wide cluster must never report a sub-spread radius).
+      6. radius = max(sqrt(precision^2 + dispersion^2), max_reach).
     """
-    items = [e for e in estimates if e is not None]
+    # Drop degenerate estimates (None, or non-finite coords/radius/weight) so a
+    # single bad input can never poison the fused result with NaN.
+    items = [
+        e for e in estimates
+        if e is not None
+        and math.isfinite(float(e.lat)) and math.isfinite(float(e.lon))
+        and math.isfinite(float(e.radius_km)) and math.isfinite(float(e.weight))
+    ]
     if not items:
         return None
-    weights = np.array([float(e.weight) / (max(0.5, float(e.radius_km)) ** 2) for e in items])
+
+    reps = _decorrelate(items)
+
+    weights = np.array([float(e.weight) / (_r_eff(e) ** 2) for e in reps])
     sw = float(weights.sum())
-    if sw <= 0:
+    if not (sw > 0) or not math.isfinite(sw):
         return None
-    lats = np.array([float(e.lat) for e in items])
-    lons = np.array([float(e.lon) for e in items])
+
+    lats = np.array([float(e.lat) for e in reps])
+    lons = np.array([float(e.lon) for e in reps])
     lat = float(np.sum(weights * lats) / sw)
     lon = weighted_lon_mean(lons, weights)  # antimeridian-safe
-    radius = 1.0 / math.sqrt(sw)
+
+    precision = max(1.0 / math.sqrt(sw), min(_r_eff(e) for e in reps))
+
+    # Dispersion: statistical spread of the (de-correlated) independent evidence.
+    if len(reps) > 1:
+        dists = np.array([haversine_km(lat, lon, float(e.lat), float(e.lon)) for e in reps])
+        variance = max(0.0, float(np.sum(weights * dists ** 2) / sw))
+        dispersion = math.sqrt(variance)
+    else:
+        dispersion = 0.0
+
+    # Coverage floor over EVERY original source (not just survivors): the circle
+    # must contain each input, so a collapsed-but-wide cluster cannot hide its
+    # spread behind a single representative.
+    max_reach = max(haversine_km(lat, lon, float(e.lat), float(e.lon)) for e in items)
+
+    radius = max(math.sqrt(precision ** 2 + dispersion ** 2), max_reach)
     return (lat, lon, radius)
 
 

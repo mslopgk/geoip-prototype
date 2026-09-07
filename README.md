@@ -7,17 +7,24 @@
 ## 무엇을 하나
 
 ### 1) 단일 IP 정밀 측위
-한 IP를 5개 신호로 동시에 분석하고, 지도에 신호별 근거(불확실성 원)와 융합 결과(신뢰원)를 표시합니다.
+한 IP를 여러 신호로 동시에 분석하고, 지도에 신호별 근거(불확실성 원)와 융합 결과(신뢰원)를 표시합니다.
 
 | 신호 | 데이터원 | 정밀도 |
 |------|----------|--------|
-| ① 다중 GeoIP | ip-api.com + ipapi.co | 도시급 (~수십 km) |
+| ① 다중 GeoIP | ip-api.com · ipapi.co · ip.guide · ipleak (4개 독립 보터, 무료/무키) | 도시급 (~수십 km) |
 | ② ASN 분류/게이팅 | ip-api 플래그(mobile/hosting/proxy) | 위치 아님 — 신뢰도 조정 |
 | ③ Traceroute 힌트 | 로컬 `tracert` 호스트명의 IATA/도시 코드 | 광역 (~수백 km) |
 | ④ 레이턴시 삼각측량 | Globalping 다지점 실측 ping | 조대 (국가/대륙) |
-| ⑤ 크라우드소싱 GPS | 동의 기여 DB (DBSCAN+시계열가중) | **미터~수백 m (정밀 핵심)** |
+| ⑤ 크라우드소싱 GPS | 동의 기여 DB (DBSCAN+시계열가중, 같은 IP 우선) | **미터~수백 m (정밀 핵심)** |
+| ⑥ 능동 레이턴시 (vantage) | 측정 서버에서 타깃·앵커 직접 ping (선택, `GEOIP_VANTAGE`) | **측정 서버 인접 시 시/구급** |
 
-융합은 **계층형 + 역분산 가중**입니다: 모바일이면 조기차단, 동의 GPS 군집이 있으면 그것이 지배, 없으면 ①③④를 역분산 가중 융합하고 ②의 플래그가 신뢰도를 깎습니다.
+융합은 **계층형 + 역분산 가중**입니다(우선순위 ⑤ > ⑥ > ①③④):
+- 모바일/CGNAT이면 조기차단.
+- 동의 GPS 군집(⑤)이 있으면 그것이 지배.
+- 없고 능동 레이턴시(⑥)가 타깃의 vantage 인접을 *측정*하면 그것이 GeoIP를 압도.
+- 둘 다 없으면 ①③④를 융합하되 **상관된 GeoIP는 1개로 묶고(de-correlation)**, 소스 불일치는 신뢰반경을 넓히며, ②의 플래그가 신뢰도를 깎고, 단일 GeoIP 출처면 그 한계를 메시지로 고지합니다.
+
+융합 결과 좌표는 **역지오코딩**으로 사람이 읽는 행정구역명(예: "부산광역시 금정구 구서동")으로도 표기됩니다.
 
 ### 2) 동의 기여 모드 (`/contribute`)
 목적·수집항목·보관·삭제권을 고지하고, 명시적 동의 체크 후에만 브라우저 GPS를 공인 IP와 매핑해 저장합니다. 본인 데이터 삭제 가능.
@@ -32,16 +39,18 @@ pip install -r requirements.txt
 # 프로젝트 루트에서
 uvicorn app.main:app --reload
 # http://127.0.0.1:8000  (조회) / http://127.0.0.1:8000/contribute  (기여)
+# 8000 포트가 예약/차단(Windows WinError 10013 등)이면 --port 9000 등으로 변경 (UI는 상대경로라 무관)
 ```
 
 필요 패키지: `fastapi`, `uvicorn`, `httpx`, `numpy` (DBSCAN은 scikit-learn 없이 numpy로 직접 구현).
-외부 연동: ip-api.com·ipapi.co(GeoIP, 무료/무키), Globalping(다지점 실측, 무료/무키, 레이트리밋 있음), 지도 타일 OpenStreetMap.
+외부 연동: ip-api.com·ipapi.co·ip.guide·ipleak.net(GeoIP, 무료/무키), Globalping(다지점 실측, 무료/무키, 레이트리밋 있음), OpenStreetMap 지도 타일 + Nominatim(역지오코딩, best-effort). 능동 레이턴시(⑥)는 OS `ping`을 사용.
 
 ## 정확도와 한계 (정직하게)
 
 - ③ traceroute, ④ 레이턴시는 **광역까지만** 좁힙니다(수십~수백 km). 라우터가 호스트명을 숨기거나 ping에 응답하지 않으면 해당 신호는 비게 됩니다.
 - **진짜 정밀도는 ⑤ 동의 GPS가 쌓여야** 나옵니다. 그 전까지 결과는 도시/광역 수준이며 UI에 신뢰반경으로 솔직히 표기됩니다.
 - ② 모바일(CGNAT) 대역은 개인 단위 측위가 **원천적으로 불가**하므로 조기 차단합니다.
+- ⑥ **능동 레이턴시 (vantage 측정, 선택)**: 측정 서버 자신의 위치를 `GEOIP_VANTAGE="위도,경도"`로 설정하면, 그 서버에서 타깃을 직접 ping해 **근접 여부를 물리적으로 측정**합니다. 왕복 RTT가 수 ms 이내면(예: 300 km 회선만으로도 왕복 >3 ms) 타깃은 vantage에 인접 → vantage 위치로 측위하고 GeoIP를 압도합니다. 한국 주거 IP처럼 모든 GeoIP가 수백 km 틀리는 경우에도, 측정 서버가 같은 지역에 있으면 **시 단위로 정확**해집니다(예: 구서동 IP가 서울 303 km 오류 → 0 km). 이는 주소를 미리 넣는 '시드'가 아니라 **RTT 측정으로 획득한** 결과입니다. 미설정(기본값)이면 신호는 비활성이라 기존 동작과 동일하고, 타깃이 멀거나 무응답이면 조용히 빠집니다.
 
 ## 프라이버시 · 법적 고지 (중요)
 
@@ -59,14 +68,16 @@ uvicorn app.main:app --reload
 
 ```
 app/
-  main.py            FastAPI 라우트 + 측위 파이프라인
+  main.py            FastAPI 라우트 + 측위 파이프라인 (IP 검증, lifespan 시작)
   models.py          공통 데이터 계약 (Estimate, ProviderResult, Classification, LocateResult)
-  geo.py             지오 수학 (haversine, numpy-DBSCAN, 삼각측량, 역분산 융합)
+  geo.py             지오 수학 (haversine, numpy-DBSCAN, 삼각측량, de-correlation+분산 융합)
   store.py           동의 기여 SQLite 저장소
   globalping.py      Globalping 측정 클라이언트
-  fusion.py          계층형 역분산 융합
-  signals/           geoip · asn · traceroute · latency · crowdsource
+  geocode.py         역지오코딩 (좌표 → 행정구역명, Nominatim, best-effort)
+  fusion.py          계층형 역분산 융합 (⑤ > ⑥ > ①③④, 정직성 보정)
+  signals/           geoip(4 providers) · asn · traceroute · latency · crowdsource · anchor_latency
 data/iata.csv        호스트명 IATA 힌트용 공항 좌표
 frontend/            index.html(조회) · contribute.html(동의 기여)
+tests/               pytest (융합 보정·신호·API·anchor·geocode)
 docs/specs/          설계 스펙
 ```

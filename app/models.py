@@ -49,6 +49,7 @@ class ProviderResult:
     is_hosting: bool = False
     is_proxy: bool = False
     network: Optional[str] = None      # CIDR if known
+    accuracy_radius_km: Optional[float] = None  # provider-reported precision, if any
     raw: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -84,6 +85,7 @@ class LocateResult:
     confidence_label: str = ""       # e.g. "정밀(GPS)", "도시급", "광역", "불가(모바일)"
     early_return: bool = False
     messages: list = field(default_factory=list)  # list[str]
+    address: Optional[str] = None    # human-readable reverse-geocoded place, if any
 
     def to_dict(self) -> dict:
         return {
@@ -96,4 +98,5 @@ class LocateResult:
             "confidence_label": self.confidence_label,
             "early_return": self.early_return,
             "messages": self.messages,
+            "address": self.address,
         }

@@ -13,6 +13,11 @@ from app import geo
 from app.globalping import measure, WORLD_SPREAD
 from app.models import Estimate
 
+# Above this triangulated radius the latency "fix" spans a continent and tells
+# us nothing useful about a city/region — emitting it as an estimate (with a
+# misleading "constraints satisfied" count) is just noise. Suppress instead.
+LATENCY_MAX_USEFUL_KM = 3000.0
+
 
 async def collect(ip, client) -> list[Estimate]:
     """Locate ``ip`` by multi-vantage latency triangulation.
@@ -70,12 +75,17 @@ async def collect(ip, client) -> list[Estimate]:
         if satisfied < need:
             return []
 
+        # Floor the radius (triangulation is inherently coarse), then suppress
+        # entirely if it is too large to constrain a location meaningfully.
+        radius_km = max(tri[2], 150.0)
+        if radius_km > LATENCY_MAX_USEFUL_KM:
+            return []
+
         est = Estimate(
             signal="latency",
             lat=tri[0],
             lon=tri[1],
-            # Floor the radius: latency triangulation is inherently coarse.
-            radius_km=max(tri[2], 150.0),
+            radius_km=radius_km,
             weight=0.35,
             label=f"다지점 레이턴시 삼각측량(프로브 {n}개 중 {satisfied}개 제약만족)",
             meta={"probes": n, "satisfied": satisfied},

@@ -87,6 +87,56 @@ async def _lookup_ipapi_co(ip: str, client: httpx.AsyncClient) -> ProviderResult
         return ProviderResult(source="ipapi.co", ok=False, raw={"error": str(e)})
 
 
+async def _lookup_ip_guide(ip: str, client: httpx.AsyncClient) -> ProviderResult:
+    """Provider C: ip.guide (HTTPS, free, no-auth). Independent extra voter."""
+    try:
+        url = f"https://ip.guide/{ip}" if ip else "https://ip.guide/"
+        r = await client.get(url, timeout=10.0)
+        data = r.json()
+        loc = data.get("location") or {}
+        lat = loc.get("latitude")
+        net = data.get("network") or {}
+        asn = net.get("autonomous_system") or {}
+        return ProviderResult(
+            source="ip.guide",
+            ok=lat is not None,
+            lat=lat,
+            lon=loc.get("longitude"),
+            city=loc.get("city"),
+            region=loc.get("state"),
+            country=loc.get("country"),
+            asn=(f"AS{asn.get('asn')}" if asn.get("asn") else None),
+            org=asn.get("name"),
+            network=net.get("cidr"),
+            raw=data,
+        )
+    except Exception as e:  # noqa: BLE001
+        return ProviderResult(source="ip.guide", ok=False, raw={"error": str(e)})
+
+
+async def _lookup_ipleak(ip: str, client: httpx.AsyncClient) -> ProviderResult:
+    """Provider D: ipleak.net (HTTPS, free, no-auth). Reports accuracy_radius."""
+    try:
+        url = f"https://ipleak.net/json/{ip}" if ip else "https://ipleak.net/json/"
+        r = await client.get(url, timeout=10.0)
+        data = r.json()
+        lat = data.get("latitude")
+        acc = data.get("accuracy_radius")
+        return ProviderResult(
+            source="ipleak",
+            ok=lat is not None,
+            lat=lat,
+            lon=data.get("longitude"),
+            city=data.get("city_name"),
+            region=data.get("region_name"),
+            country=data.get("country_code"),
+            accuracy_radius_km=(float(acc) if acc is not None else None),
+            raw=data,
+        )
+    except Exception as e:  # noqa: BLE001
+        return ProviderResult(source="ipleak", ok=False, raw={"error": str(e)})
+
+
 async def lookup_all(ip: str, client: httpx.AsyncClient) -> list[ProviderResult]:
     """Query both GeoIP providers concurrently and return their results.
 
@@ -97,11 +147,13 @@ async def lookup_all(ip: str, client: httpx.AsyncClient) -> list[ProviderResult]
     results = await asyncio.gather(
         _lookup_ip_api(ip, client),
         _lookup_ipapi_co(ip, client),
+        _lookup_ip_guide(ip, client),
+        _lookup_ipleak(ip, client),
         return_exceptions=True,
     )
 
     out: list[ProviderResult] = []
-    for source, res in zip(("ip-api", "ipapi.co"), results):
+    for source, res in zip(("ip-api", "ipapi.co", "ip.guide", "ipleak"), results):
         if isinstance(res, BaseException):
             out.append(ProviderResult(source=source, ok=False, raw={"error": str(res)}))
         else:
@@ -121,12 +173,22 @@ def to_estimates(providers: list[ProviderResult]) -> list[Estimate]:
         if not p.ok or p.lat is None or p.lon is None:
             continue
 
+        # City-level GeoIP for residential ISPs often resolves to the ISP's
+        # regional hub, not the subscriber. An observed Korean residential case
+        # was ~26 km off, so a 25 km 1-sigma was structurally too tight to ever
+        # contain the truth; 40 km is a more honest (if still coarse) default.
+        # Revisit with more ground-truth points.
         if p.city:
-            radius_km = 25.0
+            radius_km = 40.0
         elif p.region:
             radius_km = 120.0
         else:
             radius_km = 600.0
+
+        # Honor a provider-reported accuracy radius when it is coarser than our
+        # locality default (never claim tighter than the provider's own band).
+        if p.accuracy_radius_km is not None:
+            radius_km = max(radius_km, float(p.accuracy_radius_km))
 
         weight = 0.8 if p.source == "ip-api" else 0.75
         label = f"{p.source} → {p.city or p.region or p.country}"

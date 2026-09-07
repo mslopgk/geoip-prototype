@@ -69,3 +69,35 @@ Globalping은 `app/globalping.py`: `await measure(client, target, mtype, limit, 
 ## 8. 프라이버시·법
 
 연구 프로토타입 배너 상시 · 기여는 명시 동의·목적 고지·삭제권 · 은닉수집 없음 · 로컬 SQLite 보관 · 실배포 시 KCC 신고 경고. timezone/language↔IP 교차검증은 기여 유효성 플래그로만 사용(개인 추적 무기로 쓰지 않음).
+
+---
+
+## 9. 진화 (구현 후 변경 이력 · addendum)
+
+> 위 1–8은 2026-06-14 원 설계 기록(보존). 아래는 구현·실측·정확도 강화 과정에서 추가된 변경이며, 모두 **기존 신호/코드를 보존한 가산(additive)** 방식이다.
+
+### 9.1 핵심 발견 (실측)
+한국 주거 IP(LG DACOM/POWERCOMM 등)는 **모든 무료 네트워크 신호로 시/구 단위 측위 불가**임을 경험적으로 확정: 무료 GeoIP 7종(ip-api·ipapi.co·ipwho.is·ipapi.is·ip.guide·ipleak·geolocation-db 등) 전부 서울권으로 수백 km 오답, PTR/whois/RDAP에 지역정보 없음(전국 블록), Globalping latency는 남부 KR 프로브 부재 + 라스트마일 지연으로 서울/부산 구분 불가, traceroute는 CGNAT/무명 라우터. → **유일한 네트워크 돌파구는 능동 레이턴시(아래 ⑥)**, 그 외 정밀도는 ⑤ 동의 GPS.
+
+### 9.2 신호 ⑥ 추가 — 능동 레이턴시 (vantage 측위)
+`app/signals/anchor_latency.py`. 측정 서버 자신의 위치를 `GEOIP_VANTAGE="lat,lon"`로 설정하면, 그 서버에서 타깃을 OS `ping`으로 직접 측정해 왕복 RTT ≤ `VANTAGE_LOCAL_MS`(5ms)면 타깃이 vantage에 인접(빛의 속도: 300km 회선만으로도 왕복 >3ms → 원거리 물리적 배제)으로 보고 vantage 위치로 측위. 반경 = SoL 상한에서 last-mile(1ms) 차감. **주소 시드가 아니라 RTT 측정으로 획득**. 미설정 시 무음(기존 동작 보존). 안전: 타깃 IP가 포함된 응답 줄의 RTT만 인정(온링크 NAT 응답자 거짓측위 방지), 전역 유니캐스트만 능동측정.
+
+### 9.3 융합 개편 (geo.py / fusion.py)
+- 우선순위 **⑤ > ⑥ > ①③④** (crowdsource > anchor 측정 > GeoIP 융합).
+- `inverse_variance_fuse`: **de-correlation**(디스크중첩 단일연결로 상관 GeoIP를 1대표로 붕괴 → 클론이 거짓 확신 못 만듦) + **dispersion**(소스 불일치 시 반경↑) + **max_reach 커버리지 바닥**(원본 전체 포함 보장) + 비유한 가드.
+- 라벨은 페널티·교차검증 *후* 계산(과신 라벨 방지). latency 물리 모순 시 경고만이 아니라 **반경 확대**.
+- GeoIP 단일 출처 결과엔 정직성 경고 메시지.
+
+### 9.4 신호 강화
+- ① GeoIP **2→4 제공자**(+ip.guide, +ipleak), `accuracy_radius` 반영. city 반경 25→40km(주거 오차 보정).
+- ⑤ crowdsource: 같은 IP 기여 우선(시간감쇠×부스트 가중 군집 선택), GPS 정확도 바닥, sparse 바닥, **/24 prefix 프라이버시 바닥(이웃에게 정밀 노출 금지)**.
+- ③ traceroute: 인터페이스 토큰(gig/tun/ae·be·ge…)·국가불일치 IATA 오탐 제거. ④ latency: 비유용(>3000km) 억제.
+
+### 9.5 출력·역지오코딩
+`app/geocode.py`: 융합 좌표 → 행정구역명(OSM Nominatim, best-effort·캐시·실패 시 None, 비한국은 display_name). `LocateResult.address`로 노출, 프런트 표시.
+
+### 9.6 보안 하드닝 (보안 리뷰 워크플로 반영)
+능동측정 게이트 `_is_global_unicast`(멀티캐스트·CGNAT·reserved·NAT64 차단), `/api/locate` ip 검증(400) + 좌표 검증(NaN/Inf/범위), DoS 완화(결과 캐시 TTL+크기상한, 능동측정 동시성 세마포어), `/api/delete` CSRF 헤더, 자가 IP https, 제공자 에코 재검증.
+
+### 9.7 검증·결과
+pytest 68개(유닛+통합+보안), 적대적 자기검증 워크플로 3회로 회귀·안전 버그 수정. **최종 실측(GEOIP_VANTAGE=구서동): 신뢰원 정직성 3/3, 평균 중심오차 211km → 7.8km** (구서동 IP 0.0km/정밀, 명지동 23.5km/부산). 운영: 이 호스트는 8000 예약(WinError 10013) → 9000 사용(UI 상대경로).

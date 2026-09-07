@@ -5,3 +5,5 @@ venv/
 data/*.db
 *.log
 .DS_Store
+scripts/_accuracy_report.txt
+.pytest_cache/
